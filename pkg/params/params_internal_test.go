@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+	"github.com/wakatime/wakatime-cli/pkg/api"
 	"github.com/wakatime/wakatime-cli/pkg/ini"
 	"github.com/wakatime/wakatime-cli/pkg/regex"
 	"github.com/wakatime/wakatime-cli/pkg/vipertools"
@@ -350,4 +351,65 @@ func TestReadAPIKeyFromCommandBranches(t *testing.T) {
 
 	_, err = readAPIKeyFromCommand("exit 7")
 	require.Error(t, err)
+}
+
+func TestValidateAutomicVaultContext(t *testing.T) {
+	managed := func() *viper.Viper {
+		v := viper.New()
+		v.Set("settings.api_key_vault_cmd", automicVaultAPIKeyCommand)
+		return v
+	}
+
+	require.NoError(t, validateAutomicVaultContext(
+		managed(), FlagReadOrderFlagPrecedence, api.BaseURL, "", "", false,
+	))
+
+	tests := map[string]func(*viper.Viper) (string, string, bool){
+		"direct key": func(v *viper.Viper) (string, string, bool) {
+			v.Set("key", "00000000-0000-4000-8000-000000000000")
+			return "", "", false
+		},
+		"project key": func(v *viper.Viper) (string, string, bool) {
+			v.Set("project_api_key.*", "00000000-0000-4000-8000-000000000000")
+			return "", "", false
+		},
+		"api url pattern": func(v *viper.Viper) (string, string, bool) {
+			v.Set("api_urls.*", "https://example.invalid|key")
+			return "", "", false
+		},
+		"custom api url": func(_ *viper.Viper) (string, string, bool) {
+			return "https://example.invalid/api", "", false
+		},
+		"proxy": func(_ *viper.Viper) (string, string, bool) {
+			return "", "https://proxy.example", false
+		},
+		"custom certificate": func(_ *viper.Viper) (string, string, bool) {
+			return "", "/tmp/ca.pem", false
+		},
+		"disabled tls verification": func(_ *viper.Viper) (string, string, bool) {
+			return "", "", true
+		},
+	}
+
+	for name, configure := range tests {
+		t.Run(name, func(t *testing.T) {
+			v := managed()
+			apiURL, value, disableSSLVerify := configure(v)
+			if apiURL == "" {
+				apiURL = api.BaseURL
+			}
+			proxyURL, sslCertFilepath := value, ""
+			if name == "custom certificate" {
+				proxyURL, sslCertFilepath = "", value
+			}
+			require.Error(t, validateAutomicVaultContext(
+				v, FlagReadOrderFlagPrecedence, apiURL, proxyURL, sslCertFilepath, disableSSLVerify,
+			))
+		})
+	}
+
+	t.Setenv("WAKATIME_API_KEY", "00000000-0000-4000-8000-000000000000")
+	require.Error(t, validateAutomicVaultContext(
+		managed(), FlagReadOrderFlagPrecedence, api.BaseURL, "", "", false,
+	))
 }
