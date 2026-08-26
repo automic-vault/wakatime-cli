@@ -1,3 +1,23 @@
+# Automic Vault Fork Notes
+
+This repository is the Automic Vault fork of WakaTime CLI.
+
+Automic Vault is a macOS-first system that keeps developer credentials in
+custody and applies them only after policy or the user allows the complete
+operation requested by verified software.
+
+The [WakaTime CLI Hardener work](https://github.com/automic-vault/automic-vault/issues/186)
+uses WakaTime's API-key vault boundary without leaving API keys in plaintext
+configuration. This fork validates the effective API destination, key sources,
+proxy, and TLS posture before invoking Automic Vault directly; project config
+cannot silently redirect an Automic Vault credential.
+
+Automic Vault's reviewed release process builds and signs the executable with
+Hardened Runtime and no entitlements. This source fork alone does not establish
+Hardened State. The remainder of this README is the original upstream README.
+
+---
+
 # WakaTime CLI
 
 [![Tests](https://img.shields.io/github/actions/workflow/status/wakatime/wakatime-cli/on_push.yml?branch=develop&label=tests)](https://github.com/wakatime/wakatime-cli/actions)
