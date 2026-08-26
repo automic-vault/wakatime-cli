@@ -35,7 +35,8 @@ import (
 )
 
 const (
-	errMsgTemplate = "invalid url %q. Must be in format" +
+	automicVaultAPIKeyCommand = "/usr/local/bin/av wakatime-credential"
+	errMsgTemplate            = "invalid url %q. Must be in format" +
 		"'https://user:pass@host:port' or " +
 		"'socks5://user:pass@host:port' or " +
 		"'domain\\\\user:pass.'"
@@ -295,12 +296,30 @@ type (
 // LoadAPIParams loads API params from viper.Viper instance. Returns ErrAuth
 // if failed to retrieve api key.
 func LoadAPIParams(ctx context.Context, v *viper.Viper, order FlagReadOrder) (API, error) {
-	apiKey, err := loadAPIKey(ctx, v, order)
+	apiURL, err := loadAPIURL(v)
 	if err != nil {
 		return API{}, err
 	}
 
-	apiURL, err := loadAPIURL(v)
+	proxyURL, err := loadProxyURL(ctx, v, apiURL)
+	if err != nil {
+		return API{}, err
+	}
+
+	sslCertFilepath := vipertools.FirstNonEmptyString(v, "ssl-certs-file", "settings.ssl_certs_file")
+	if sslCertFilepath != "" {
+		sslCertFilepath, err = homedir.Expand(sslCertFilepath)
+		if err != nil {
+			return API{}, api.ErrAuth{Err: fmt.Errorf("failed expanding ssl certs file: %s", err)}
+		}
+	}
+
+	disableSSLVerify := vipertools.FirstNonEmptyBool(v, "no-ssl-verify", "settings.no_ssl_verify")
+	if err := validateAutomicVaultContext(v, order, apiURL.String(), proxyURL, sslCertFilepath, disableSSLVerify); err != nil {
+		return API{}, api.ErrAuth{Err: err}
+	}
+
+	apiKey, err := loadAPIKey(ctx, v, order, apiURL.String())
 	if err != nil {
 		return API{}, err
 	}
@@ -319,19 +338,6 @@ func LoadAPIParams(ctx context.Context, v *viper.Viper, order FlagReadOrder) (AP
 
 	hostname := loadHostname(ctx, v)
 
-	proxyURL, err := loadProxyURL(ctx, v, apiURL)
-	if err != nil {
-		return API{}, err
-	}
-
-	sslCertFilepath := vipertools.FirstNonEmptyString(v, "ssl-certs-file", "settings.ssl_certs_file")
-	if sslCertFilepath != "" {
-		sslCertFilepath, err = homedir.Expand(sslCertFilepath)
-		if err != nil {
-			return API{}, api.ErrAuth{Err: fmt.Errorf("failed expanding ssl certs file: %s", err)}
-		}
-	}
-
 	timeout := api.DefaultTimeoutSecs
 
 	if timeoutSecs, ok := vipertools.FirstNonEmptyInt(v, "timeout", "settings.timeout"); ok {
@@ -341,7 +347,7 @@ func LoadAPIParams(ctx context.Context, v *viper.Viper, order FlagReadOrder) (AP
 	return API{
 		BackoffAt:        backoffAt,
 		BackoffRetries:   backoffRetries,
-		DisableSSLVerify: vipertools.FirstNonEmptyBool(v, "no-ssl-verify", "settings.no_ssl_verify"),
+		DisableSSLVerify: disableSSLVerify,
 		Hostname:         hostname,
 		Key:              apiKey,
 		KeyPatterns:      apiKeyPatterns,
@@ -352,6 +358,32 @@ func LoadAPIParams(ctx context.Context, v *viper.Viper, order FlagReadOrder) (AP
 		URL:              apiURL.String(),
 		URLPatterns:      apiURLPatterns,
 	}, nil
+}
+
+func validateAutomicVaultContext(
+	v *viper.Viper,
+	order FlagReadOrder,
+	apiURL string,
+	proxyURL string,
+	sslCertFilepath string,
+	disableSSLVerify bool,
+) error {
+	if strings.TrimSpace(vipertools.GetString(v, "settings.api_key_vault_cmd")) != automicVaultAPIKeyCommand {
+		return nil
+	}
+	if vipertools.FirstNonEmptyString(v, apiKeyOrder[order]...) != "" || os.Getenv("WAKATIME_API_KEY") != "" {
+		return errors.New("Automic Vault credentials cannot be combined with another API key source")
+	}
+	if len(vipertools.GetStringMapString(v, "project_api_key")) != 0 || len(vipertools.GetStringMapString(v, "api_urls")) != 0 {
+		return errors.New("Automic Vault credentials do not support project API keys or URL overrides")
+	}
+	if apiURL != api.BaseURL {
+		return errors.New("Automic Vault credentials require the official WakaTime API URL")
+	}
+	if proxyURL != "" || sslCertFilepath != "" || disableSSLVerify {
+		return errors.New("Automic Vault credentials do not support proxies or TLS exceptions")
+	}
+	return nil
 }
 
 func loadAPIKeyPatterns(ctx context.Context, v *viper.Viper, defaultAPIKey string) ([]apikey.MapPattern, error) {
@@ -558,7 +590,20 @@ func loadProxyURL(ctx context.Context, v *viper.Viper, apiURL *url.URL) (string,
 }
 
 // loadAPIKey loads a valid default WakaTime API Key or returns an error.
-func loadAPIKey(ctx context.Context, v *viper.Viper, order FlagReadOrder) (string, error) {
+func loadAPIKey(ctx context.Context, v *viper.Viper, order FlagReadOrder, apiURL string) (string, error) {
+	command := strings.TrimSpace(vipertools.GetString(v, "settings.api_key_vault_cmd"))
+	if command == automicVaultAPIKeyCommand {
+		apiKey, err := readAutomicVaultAPIKey(apiURL)
+		if err != nil {
+			return "", api.ErrAuth{Err: fmt.Errorf("failed to read api key from Automic Vault: %s", err)}
+		}
+		if !apiKeyRegex.MatchString(apiKey) {
+			return "", api.ErrAuth{Err: errors.New("invalid api key format")}
+		}
+		log.Extract(ctx).Debugln("loaded api key from Automic Vault")
+		return apiKey, nil
+	}
+
 	apiKey := vipertools.FirstNonEmptyString(v, apiKeyOrder[order]...)
 	if apiKey != "" {
 		if !apiKeyRegex.MatchString(apiKey) {
@@ -568,7 +613,7 @@ func loadAPIKey(ctx context.Context, v *viper.Viper, order FlagReadOrder) (strin
 		return apiKey, nil
 	}
 
-	apiKey, err := readAPIKeyFromCommand(vipertools.GetString(v, "settings.api_key_vault_cmd"))
+	apiKey, err := readAPIKeyFromCommand(command)
 	if err != nil {
 		return "", api.ErrAuth{Err: fmt.Errorf("failed to read api key from vault: %s", err)}
 	}
@@ -601,6 +646,19 @@ func loadAPIKey(ctx context.Context, v *viper.Viper, order FlagReadOrder) (strin
 	}
 
 	return apiKey, nil
+}
+
+func readAutomicVaultAPIKey(apiURL string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "/usr/local/bin/av", "wakatime-credential", "1", apiURL)
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // LoadHeartbeatParams loads heartbeats params from viper.Viper instance.
