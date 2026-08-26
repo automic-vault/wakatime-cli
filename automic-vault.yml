@@ -1,0 +1,32 @@
+name:
+  isotope:wakatime-cli
+
+replaces:
+  brew:wakatime-cli
+
+build: |
+  GOTOOLCHAIN=go1.26.5 CGO_ENABLED=0 go test -mod=readonly ./pkg/params
+  mkdir -p bin
+  GOTOOLCHAIN=go1.26.5 CGO_ENABLED=0 GOOS=darwin GOARCH="$(go env GOARCH)" \
+    go build -mod=readonly -trimpath \
+    -ldflags "-s -w -X 'github.com/wakatime/wakatime-cli/pkg/version.Version=${VERSION}'" \
+    -o bin/wakatime-cli .
+  test "$(bin/wakatime-cli --version)" = "${VERSION}"
+  codesign --force --options runtime --timestamp \
+    --identifier wakatime-cli \
+    --sign "$CODESIGN_IDENTITY" \
+    bin/wakatime-cli
+  tar czf out.tgz bin/wakatime-cli
+
+justification:
+  title:
+    Unprotected Credential Access
+  detail: |
+    WakaTime CLI can store global, project, URL-specific, and proxy credentials
+    in plaintext configuration. Its native vault command also executes through
+    a shell and does not identify the effective API destination.
+
+    This Isotope invokes Automic Vault directly and rejects competing key
+    sources, alternate API destinations, proxies, and TLS exceptions before
+    requesting the global API key. The Hardener leaves only non-secret settings
+    and a fixed provider command on disk.
