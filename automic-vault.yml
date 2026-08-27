@@ -5,9 +5,9 @@ replaces:
   brew:wakatime-cli
 
 build: |
-  GOTOOLCHAIN=go1.26.5 CGO_ENABLED=0 go test -mod=readonly ./pkg/params
+  GOTOOLCHAIN=go1.26.6 CGO_ENABLED=0 go test -mod=readonly ./pkg/params
   mkdir -p bin
-  GOTOOLCHAIN=go1.26.5 CGO_ENABLED=0 GOOS=darwin GOARCH="$(go env GOARCH)" \
+  GOTOOLCHAIN=go1.26.6 CGO_ENABLED=0 GOOS=darwin GOARCH="$(go env GOARCH)" \
     go build -mod=readonly -trimpath \
     -ldflags "-s -w -X 'github.com/wakatime/wakatime-cli/pkg/version.Version=${VERSION}'" \
     -o bin/wakatime-cli .
